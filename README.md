@@ -2,7 +2,8 @@
 
 **pyminiping** is a pure Python ICMP ping library for Linux servers.
 
-It sends one or more ICMP echo packets and provides detailed statistics: min, max, mean, median, jitter, TTL, and estimated number of hops.
+It sends one or more ICMP echo packets and provides detailed statistics: min, max, mean, median, jitter, TTL, estimated number 
+of hops, and an OS family guess based on TTL.
 
 ## Features
 
@@ -10,6 +11,7 @@ It sends one or more ICMP echo packets and provides detailed statistics: min, ma
 - Statistics: min, max, mean, median, jitter (standard deviation)
 - Sent/received packet count and loss percentage
 - TTL and estimated hop count (`hops`)
+- Operating system family guess (`os_guess`) based on received TTL
 - Customizable parameters: count, timeout, interval
 
 ## Installation
@@ -18,7 +20,6 @@ It sends one or more ICMP echo packets and provides detailed statistics: min, ma
 git clone https://github.com/roxy-wi/pyminiping.git
 cd pyminiping
 python3 -m pip install .
-# pyminiping
 ```
 
 ## Example usage
@@ -41,14 +42,15 @@ PingResult(
     sent=5,
     received=5,
     loss=0.0,
-    min=19.3,
-    max=21.1,
-    mean=20.2,
-    median=20.0,
-    jitter=0.7,
-    rtt_list=[19.3, 19.7, 20.0, 20.8, 21.1],
-    ttl=57,
-    hops=8
+    min=0.0044,
+    max=0.0062,
+    mean=0.0048,
+    median=0.0045,
+    jitter=0.0007,
+    rtt_list=[0.0062, 0.0044, 0.0045, 0.0044, 0.0045],
+    ttl=110,
+    hops=19,
+    os_guess='Windows'
 )
 ```
 
@@ -59,15 +61,17 @@ or as dict
     'sent': 5,
     'received': 5,
     'loss': 0.0,
-    'min': 19.3,
-    'max': 21.1,
-    'mean': 20.2,
-    'median': 20.0,
-    'jitter': 0.7,
-    'rtt_list': [19.3, 19.7, 20.0, 20.8, 21.1],
-    'ttl': 57,
-    'hops': 8
+    'min': 0.0044,
+    'max': 0.0062,
+    'mean': 0.0048,
+    'median': 0.0045,
+    'jitter': 0.0007,
+    'rtt_list': [0.0062, 0.0044, 0.0045, 0.0044, 0.0045],
+    'ttl': 110,
+    'hops': 19,
+    'os_guess': 'Windows'
 }
+
 
 ```
 

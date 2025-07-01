@@ -10,8 +10,6 @@ from .exceptions import (
     PyMiniPingException,
     HostUnreachable,
     RootRequired,
-    PingTimeout,
-    PacketError,
 )
 
 ICMP_ECHO_REQUEST = 8
@@ -48,12 +46,30 @@ def create_packet(packet_id: int, seq: int) -> bytes:
     return header + data
 
 
+def guess_initial_ttl(received_ttl: int) -> int:
+    """Guess the initial TTL based on received TTL, using OS heuristics."""
+    if received_ttl <= 64:
+        return 64    # Linux/Unix/BSD/macOS/Android
+    elif received_ttl <= 128:
+        return 128   # Windows
+    else:
+        return 255   # Cisco/network equipment
+
+
+def guess_os(received_ttl: int) -> str:
+    """Guess operating system family based on received TTL."""
+    if received_ttl <= 64:
+        return "Linux/Unix/BSD/macOS/Android"
+    elif received_ttl <= 128:
+        return "Windows"
+    else:
+        return "Network device (e.g., Cisco)"
+
+
 def calc_hops(received_ttl: int) -> Optional[int]:
     """Estimate hop count based on common initial TTL values."""
-    for initial_ttl in (64, 128, 255):
-        if received_ttl <= initial_ttl:
-            return initial_ttl - received_ttl + 1
-    return None
+    initial_ttl = guess_initial_ttl(received_ttl)
+    return initial_ttl - received_ttl + 1
 
 
 @dataclass
@@ -69,6 +85,7 @@ class PingResult:
     rtt_list: List[float] = field(default_factory=list)
     ttl: Optional[int] = 0
     hops: Optional[int] = 0
+    os_guess: Optional[str] = None
 
     def as_dict(self) -> dict:
         """Return result as a dictionary."""
@@ -110,28 +127,33 @@ def ping(
         try:
             sock.sendto(packet, (addr, 1))
             sock.settimeout(timeout)
-            rec_packet, _ = sock.recvfrom(1024)
-            time_received = time.time()
-            ip_header = rec_packet[:20]
-            icmp_header = rec_packet[20:28]
-            recv_ttl = ip_header[8]
-            _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BBHHH', icmp_header)
-            if recv_id == packet_id and recv_seq == seq:
-                bytes_in_double = struct.calcsize('d')
-                time_sent = struct.unpack('d', rec_packet[28:28 + bytes_in_double])[0]
-                rtt = time_received - time_sent  # RTT in seconds
-                rtt_list.append(rtt)
-                received += 1
-                if ttl is None:
-                    ttl = recv_ttl
-            else:
-                raise PacketError("Received malformed or unexpected ICMP packet")
-        except socket.timeout:
-            # Packet lost, ignore and continue
-            pass
+            while True:
+                try:
+                    rec_packet, _ = sock.recvfrom(1024)
+                    time_received = time.time()
+                    ip_header = rec_packet[:20]
+                    icmp_header = rec_packet[20:28]
+                    recv_ttl = ip_header[8]
+                    _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BBHHH', icmp_header)
+                    if recv_id == packet_id and recv_seq == seq:
+                        bytes_in_double = struct.calcsize('d')
+                        time_sent = struct.unpack('d', rec_packet[28:28 + bytes_in_double])[0]
+                        rtt = time_received - time_sent
+                        rtt_list.append(rtt)
+                        received += 1
+                        if ttl is None:
+                            ttl = recv_ttl
+                        break  # Break from inner while, go to next seq
+                    else:
+                        # Not our packet — ignore and keep waiting
+                        continue
+                except socket.timeout:
+                    # Timed out waiting for the right packet, just move on
+                    break
         except Exception as e:
-            raise PingTimeout(f"Ping failed: {e}")
+            raise PyMiniPingException(f"Ping failed: {e}")
         time.sleep(interval if seq < count else 0)
+
     sock.close()
 
     loss = ((count - received) / count) * 100 if count else 100
@@ -147,6 +169,7 @@ def ping(
         "rtt_list": rtt_list,
         "ttl": ttl,
         "hops": calc_hops(ttl) if ttl is not None else 0,
+        "os_guess": guess_os(ttl) if ttl is not None else None
     }
     return PingResult(**stats)
 
