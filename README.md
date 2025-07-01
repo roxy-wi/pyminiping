@@ -15,7 +15,7 @@ It sends one or more ICMP echo packets and provides detailed statistics: min, ma
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/pyminiping.git
+git clone https://github.com/roxy-wi/pyminiping.git
 cd pyminiping
 python3 -m pip install .
 # pyminiping
