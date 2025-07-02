@@ -5,4 +5,5 @@ from .exceptions import (
     RootRequired,
     PingTimeout,
     PacketError,
+    DestinationUnreachable
 )

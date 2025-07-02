@@ -10,13 +10,57 @@ from .exceptions import (
     PyMiniPingException,
     HostUnreachable,
     RootRequired,
-    PingTimeout
+    PingTimeout,
+    DestinationUnreachable
 )
 
 ICMP_ECHO_REQUEST = 8
-
-
 ICMP6_ECHO_REQUEST = 128
+
+
+def icmp_code_to_text(code: int) -> str:
+    # See RFC 792
+    codes = {
+        0: "Network unreachable",
+        1: "Host unreachable",
+        2: "Protocol unreachable",
+        3: "Port unreachable",
+        4: "Fragmentation needed and DF set",
+        5: "Source route failed",
+        13: "Communication administratively prohibited (firewalled)",
+    }
+    return codes.get(code, "Unknown reason")
+
+
+def icmpv6_code_to_text(code: int) -> str:
+    codes = {
+        0: "No route to destination",
+        1: "Communication administratively prohibited (firewalled)",
+        2: "Beyond scope of source address",
+        3: "Address unreachable",
+        4: "Port unreachable",
+        5: "Source address failed ingress/egress policy",
+        6: "Reject route to destination",
+        7: "Error in Source Routing Header",
+    }
+    return codes.get(code, "Unknown reason")
+
+
+def percentile(data, percent):
+    """
+    Calculate the desired percentile of a list of numbers (0-100).
+    """
+    if not data:
+        return None
+    data = sorted(data)
+    k = (len(data) - 1) * (percent / 100)
+    f = int(k)
+    c = f + 1
+    if c > len(data) - 1:
+        return data[-1]
+    d0 = data[f] * (c - k)
+    d1 = data[c] * (k - f)
+    return d0 + d1
 
 
 def checksum(source: bytes) -> int:
@@ -50,7 +94,7 @@ def resolve_host(host: str):
 
 
 def create_packet(family: int, packet_id: int, seq: int, size: int = 8) -> bytes:
-    """Create ICMP Echo packet with custom payload size."""
+    """Create an ICMP Echo packet with a custom payload size."""
     if family == socket.AF_INET:
         header = struct.pack('!BBHHH', ICMP_ECHO_REQUEST, 0, 0, packet_id, seq)
     else:
@@ -96,6 +140,24 @@ def calc_hops(received_ttl: int) -> Optional[int]:
 
 @dataclass
 class PingResult:
+    """
+    Holds the statistics and result details for a ping operation.
+
+    Attributes:
+        sent (int): Number of packets sent.
+        received (int): Number of packets received.
+        loss (float): Percentage of lost packets.
+        min (Optional[float]): Minimum round-trip time (seconds).
+        max (Optional[float]): Maximum round-trip time (seconds).
+        mean (Optional[float]): Mean round-trip time (seconds).
+        median (Optional[float]): Median round-trip time (seconds).
+        jitter (float): Standard deviation of round-trip times (seconds).
+        rtt_list (List[float]): List of all round-trip times (seconds).
+        ttl (Optional[int]): Time to Live from a response packet.
+        hops (Optional[int]): Estimated number of network hops.
+        os_guess (Optional[str]): Guessed operating system family based on TTL.
+        p95 (Optional[float]): 95th percentile of round-trip times (seconds).
+    """
     sent: int
     received: int
     loss: float
@@ -108,9 +170,10 @@ class PingResult:
     ttl: Optional[int] = 0
     hops: Optional[int] = 0
     os_guess: Optional[str] = None
+    p95: Optional[float] = None
 
     def as_dict(self) -> dict:
-        """Return result as a dictionary."""
+        """Return a result as a dictionary."""
         return self.__dict__
 
 
@@ -119,8 +182,34 @@ def ping(
     count: int = 1,
     timeout: int = 1,
     interval: float = 0.1,
-    size: int = 56
+    size: int = 56,
+    dscp: int = None,
 ) -> PingResult:
+    """
+    Send ICMP echo requests (ping) to a host.
+
+    Parameters:
+        host (str): Hostname or IP address to ping.
+        count (int): Number of packets to send. Default is 1.
+        timeout (int): Timeout for each packet in seconds. Default is 1.
+        interval (float): Interval between packets (seconds). Default is 0.1.
+        size (int): Payload size in bytes (minimum 8). Default is 8.
+        dscp (int): Optional DSCP value (0-63) for packet prioritization.
+
+    Returns:
+        PingResult: Dataclass with statistics for the operation.
+
+    Raises:
+        HostUnreachable: If host cannot be resolved.
+        RootRequired: If insufficient privileges to create a RAW socket.
+        PingTimeout: If no response is received.
+        PyMiniPingException: For other low-level socket errors.
+
+    Example:
+        >>> from pyminiping import ping
+        >>> result = ping('8.8.8.8', count=3)
+        >>> print(result.mean)
+    """
     family, addr = resolve_host(host)
     packet_id = os.getpid() & 0xFFFF
     rtt_list: List[float] = []
@@ -139,6 +228,16 @@ def ping(
     except Exception as e:
         raise PyMiniPingException(f"Socket error: {e}")
 
+    if dscp is not None:
+        # DSCP is 6 bits in the IP header; the 2 lowest bits are ECN.
+        # Shift DSCP left by 2 to align with ToS field.
+        if family == socket.AF_INET:
+            tos = dscp << 2
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos)
+        elif family == socket.AF_INET6:
+            # For IPv6, traffic class is set with IPV6_TCLASS option
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_TCLASS, dscp << 2)
+
     for seq in range(1, count + 1):
         packet = create_packet(family, packet_id, seq, size)
         try:
@@ -153,12 +252,16 @@ def ping(
                         icmp_header = rec_packet[20:28]
                         recv_ttl = ip_header[8]
                         _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BBHHH', icmp_header)
+                        if _type == 3:  # ICMP Destination Unreachable
+                            raise DestinationUnreachable(code, message=icmp_code_to_text(code))
                         is_ours = recv_id == packet_id and recv_seq == seq
                     else:
                         # IPv6: ICMP header is first 8 bytes
                         icmp_header = rec_packet[:8]
                         recv_ttl = None  # Getting TTL for IPv6 is non-trivial
                         _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BbHHh', icmp_header)
+                        if _type == 1:  # ICMPv6 Destination Unreachable
+                            raise DestinationUnreachable(code, message=icmpv6_code_to_text(code))
                         is_ours = recv_id == packet_id and recv_seq == seq
                     if is_ours:
                         bytes_in_double = struct.calcsize('d')  # always 8
@@ -180,7 +283,7 @@ def ping(
     sock.close()
 
     if received == 0:
-        raise PingTimeout(f"No reply from host {host} (timeout after {count} attempts).")
+        raise PingTimeout(f"No reply from host {host} (timeout after {timeout}s).")
 
     loss = ((count - received) / count) * 100 if count else 100
     os_guess = guess_os(ttl) if (ttl is not None and family == socket.AF_INET) else None
@@ -197,6 +300,7 @@ def ping(
         "ttl": ttl,
         "hops": calc_hops(ttl) if ttl is not None and family == socket.AF_INET else None,
         "os_guess": os_guess,
+        "p95": percentile(rtt_list, 95) if rtt_list else None,
     }
     return PingResult(**stats)
 
@@ -206,10 +310,15 @@ def ping_stats(
     count: int = 1,
     timeout: int = 1,
     interval: float = 0.1,
-    size: int = 56
+    size: int = 56,
+    dscp: int = None,
 ) -> dict:
     """
-    Returns result as a dict (wrapper for ping).
-    RTTs are in seconds!
+    Convenience wrapper around ping() that returns results as a dictionary.
+
+    See ping() for parameters and exception details.
+
+    Returns:
+        dict: Ping statistics.
     """
-    return ping(host, count, timeout, interval).as_dict()
+    return ping(host, count, timeout, interval, size, dscp).as_dict()

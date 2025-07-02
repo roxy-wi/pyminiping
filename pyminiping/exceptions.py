@@ -16,3 +16,13 @@ class PingTimeout(PyMiniPingException):
 
 class PacketError(PyMiniPingException):
     """Raised when a received packet is malformed or unexpected."""
+
+
+class DestinationUnreachable(PyMiniPingException):
+    """
+    Raised when an ICMP Destination Unreachable packet is received.
+    """
+    def __init__(self, code: int, message: str = ""):
+        super().__init__(f"ICMP Destination Unreachable (code {code}): {message}")
+        self.code = code
+        self.message = message

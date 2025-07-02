@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='pyminiping',
-    version='0.3.0',
+    version='1.0.0',
     description='Pure Python ICMP ping with statistics and hop count',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
@@ -20,4 +20,9 @@ setup(
     ],
     license='MIT',
     include_package_data=True,
+    entry_points={
+        'console_scripts': [
+            'pyminiping=pyminiping.cli:main',
+        ],
+    },
 )

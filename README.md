@@ -19,6 +19,7 @@ of hops, and an OS family guess based on TTL.
 - Operating system family guess (`os_guess`) based on received TTL
 - Customizable parameters: count, timeout, interval, size
 - IPv4 and IPv6 supporting
+- dscp value (0-63) for traffic prioritization
 
 ## Installation
 
@@ -30,12 +31,14 @@ python3 -m pip install .
 
 ## Example usage
 ```python
-from pyminiping import ping
+from pyminiping import ping, DestinationUnreachable
 
 try:
     result = ping('8.8.8.8', count=5, timeout=1, interval=0.2)
     print(result)
     print(result.as_dict())
+except DestinationUnreachable as e:
+    print(f"Unreachable: {e.message} (code {e.code})")
 except Exception as e:
     print(f"Ping failed: {e}")
 
@@ -80,6 +83,17 @@ or as dict
 
 
 ```
+## Common DSCP values
+
+| Name    | DSCP | Use Case             |
+| ------- | ---- | -------------------- |
+| Default | 0    | Best Effort          |
+| CS1     | 8    | Background           |
+| AF11    | 10   | Low-priority data    |
+| AF21    | 18   | Standard             |
+| AF41    | 46   | Voice, high-priority |
+| EF      | 46   | Expedited Forwarding |
+
 
 ## Notes
 
@@ -88,3 +102,12 @@ Requires root privileges or CAP_NET_RAW capability (e.g., sudo python3 yourscrip
 Linux only (tested on Ubuntu/Debian)
 
 The hop count (hops) is calculated using common initial TTL values (64, 128, 255). For most Linux servers this is accurate.
+
+
+## Troubleshooting RAW socket permissions
+
+- If you see: "Root privileges or CAP_NET_RAW are required to create RAW socket"
+    - Run your script as root, e.g. `sudo python3 script.py`
+    - Or, to allow your Python interpreter to use RAW sockets without root:
+        - On Linux: `sudo setcap cap_net_raw+ep $(readlink -f $(which python3))`
+    - For more details, see: https://man7.org/linux/man-pages/man7/capabilities.7.html
