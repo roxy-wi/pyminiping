@@ -12,7 +12,8 @@ of hops, and an OS family guess based on TTL.
 - Sent/received packet count and loss percentage
 - TTL and estimated hop count (`hops`)
 - Operating system family guess (`os_guess`) based on received TTL
-- Customizable parameters: count, timeout, interval
+- Customizable parameters: count, timeout, interval, size
+- IPv4 and IPv6 supporting
 
 ## Installation
 
