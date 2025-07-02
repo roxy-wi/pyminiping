@@ -2,6 +2,11 @@
 
 **pyminiping** is a pure Python ICMP ping library for Linux servers.
 
+![PyPI version](https://img.shields.io/pypi/v/pyminiping)
+![Build status](https://github.com/roxy-wi/pyminiping/actions/workflows/ci.yml/badge.svg)
+![Python versions](https://img.shields.io/pypi/pyversions/pyminiping)
+![License](https://img.shields.io/pypi/l/pyminiping)
+
 It sends one or more ICMP echo packets and provides detailed statistics: min, max, mean, median, jitter, TTL, estimated number 
 of hops, and an OS family guess based on TTL.
 
