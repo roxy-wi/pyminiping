@@ -20,6 +20,7 @@ of hops, and an OS family guess based on TTL.
 - Customizable parameters: count, timeout, interval, size
 - IPv4 and IPv6 supporting
 - dscp value (0-63) for traffic prioritization
+- Percentile 95
 
 ## Installation
 
@@ -59,7 +60,8 @@ PingResult(
     rtt_list=[0.0062, 0.0044, 0.0045, 0.0044, 0.0045],
     ttl=110,
     hops=19,
-    os_guess='Windows'
+    os_guess='Windows',
+    p95=0.0007
 )
 ```
 
@@ -78,11 +80,33 @@ or as dict
     'rtt_list': [0.0062, 0.0044, 0.0045, 0.0044, 0.0045],
     'ttl': 110,
     'hops': 19,
-    'os_guess': 'Windows'
+    'os_guess': 'Windows',
+    'p95': 0.0007
 }
 
 
 ```
+
+## Command-Line Interface (CLI)
+
+After installing pyminiping, you can use it as a command-line tool.
+
+
+| Option         | Description                                       | Default |
+| -------------- | ------------------------------------------------- | ------- |
+| host           | Host to ping (required)                           |         |
+| -c, --count    | Number of packets to send                         | 4       |
+| -t, --timeout  | Timeout per packet (seconds)                      | 1       |
+| -i, --interval | Interval between packets (seconds, float allowed) | 0.1     |
+| -s, --size     | Payload size in bytes                             | 8       |
+| --dscp         | DSCP value (0-63, for QoS)                        | not set |
+
+### Basic usage
+
+```bash
+sudo pyminiping 8.8.8.8
+```
+
 ## Common DSCP values
 
 | Name    | DSCP | Use Case             |

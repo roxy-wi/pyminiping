@@ -3,7 +3,7 @@ import socket
 import struct
 import time
 from statistics import mean, median, stdev
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, List
 
 from .exceptions import (
@@ -172,9 +172,8 @@ class PingResult:
     os_guess: Optional[str] = None
     p95: Optional[float] = None
 
-    def as_dict(self) -> dict:
-        """Return a result as a dictionary."""
-        return self.__dict__
+    def as_dict(self):
+        return asdict(self)
 
 
 def ping(

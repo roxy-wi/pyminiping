@@ -13,6 +13,7 @@ def main():
     parser.add_argument("-s", "--size", type=int, default=8, help="Payload size in bytes (default: 8)")
     parser.add_argument("--dscp", type=int, help="DSCP value (0-63, optional)")
     parser.add_argument("--show-rtts", action="store_true", help="Show all individual RTTs")
+    parser.add_argument("-j", "--json", action="store_true", help="Output in JSON format")
     args = parser.parse_args()
 
     try:
@@ -24,18 +25,22 @@ def main():
             size=args.size,
             dscp=args.dscp,
         )
-        print(f"\nPing statistics for {args.host}:")
-        print(f"  Packets: sent={result.sent}, received={result.received}, loss={result.loss:.1f}%")
-        if result.received > 0:
-            print(f"  RTT min/avg/max/median/jitter: "
-                  f"{result.min:.4f}/{result.mean:.4f}/{result.max:.4f}/{result.median:.4f}/{result.jitter:.4f} sec")
-            print(f"  p95: "
-                  f"{result.p95:.4f} sec")
-            print(f"  TTL: {result.ttl}, hops: {result.hops}, OS guess: {result.os_guess}")
-            if args.show_rtts:
-                print(f"  All RTTs: {['%.4f' % v for v in result.rtt_list]}")
+        if args.json:
+            import json
+            print(json.dumps(result.as_dict(), indent=2, default=str))
         else:
-            print("  No replies received.")
+            print(f"\nPing statistics for {args.host}:")
+            print(f"  Packets: sent={result.sent}, received={result.received}, loss={result.loss:.1f}%")
+            if result.received > 0:
+                print(f"  RTT min/avg/max/median/jitter: "
+                      f"{result.min:.4f}/{result.mean:.4f}/{result.max:.4f}/{result.median:.4f}/{result.jitter:.4f} sec")
+                print(f"  p95: "
+                      f"{result.p95:.4f} sec")
+                print(f"  TTL: {result.ttl}, hops: {result.hops}, OS guess: {result.os_guess}")
+                if args.show_rtts:
+                    print(f"  All RTTs: {['%.4f' % v for v in result.rtt_list]}")
+            else:
+                print("  No replies received.")
     except HostUnreachable:
         print("Host unreachable or cannot resolve host.")
     except RootRequired:
