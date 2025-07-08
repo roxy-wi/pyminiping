@@ -29,18 +29,7 @@ def main():
             import json
             print(json.dumps(result.as_dict(), indent=2, default=str))
         else:
-            print(f"\nPing statistics for {args.host}:")
-            print(f"  Packets: sent={result.sent}, received={result.received}, loss={result.loss:.1f}%")
-            if result.received > 0:
-                print(f"  RTT min/avg/max/median/jitter: "
-                      f"{result.min:.4f}/{result.mean:.4f}/{result.max:.4f}/{result.median:.4f}/{result.jitter:.4f} sec")
-                print(f"  p95: "
-                      f"{result.p95:.4f} sec")
-                print(f"  TTL: {result.ttl}, hops: {result.hops}, OS guess: {result.os_guess}")
-                if args.show_rtts:
-                    print(f"  All RTTs: {['%.4f' % v for v in result.rtt_list]}")
-            else:
-                print("  No replies received.")
+            print(result)
     except HostUnreachable:
         print("Host unreachable or cannot resolve host.")
     except RootRequired:

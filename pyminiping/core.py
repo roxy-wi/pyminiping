@@ -175,6 +175,15 @@ class PingResult:
     def as_dict(self):
         return asdict(self)
 
+    def __str__(self):
+        return (f"Packets: sent={self.sent}, received={self.received}, loss={self.loss:.1f}%\n"
+            f"RTT min/avg/max/median/jitter: \n"
+            f"    {self.min:.4f}/{self.mean:.4f}/{self.max:.4f}/{self.median:.4f}/{self.jitter:.4f} sec\n"
+            f"p95: \n"
+            f"    {self.p95:.4f} sec\n"
+            f"TTL: {self.ttl}, hops: {self.hops}, OS guess: {self.os_guess}\n"
+            f"All RTTs: {['%.4f' % v for v in self.rtt_list]}")
+
 
 def ping(
     host: str,
