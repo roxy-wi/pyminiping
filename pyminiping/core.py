@@ -99,16 +99,22 @@ def create_packet(family: int, packet_id: int, seq: int, size: int = 8) -> bytes
         header = struct.pack('!BBHHH', ICMP_ECHO_REQUEST, 0, 0, packet_id, seq)
     else:
         header = struct.pack('!BbHHh', ICMP6_ECHO_REQUEST, 0, 0, packet_id, seq)
+
     # First 8 bytes: timestamp, the rest: padding with zero bytes
     if size < 8:
         raise ValueError("Minimum size is 8 bytes.")
+
     payload = struct.pack('d', time.time()) + bytes(size - 8)
     packet = header + payload
     my_checksum = checksum(packet)
+
     if family == socket.AF_INET:
         header = struct.pack('!BBHHH', ICMP_ECHO_REQUEST, 0, my_checksum, packet_id, seq)
     else:
+        # For Linux raw ICMPv6 sockets checksum is typically handled by kernel,
+        # but keeping current behavior to match the existing implementation.
         header = struct.pack('!BbHHh', ICMP6_ECHO_REQUEST, 0, my_checksum, packet_id, seq)
+
     return header + payload
 
 
@@ -175,6 +181,20 @@ class PingResult:
     def as_dict(self):
         return asdict(self)
 
+    @property
+    def success(self) -> bool:
+        """
+        True if at least one packet was received.
+        """
+        return self.received > 0
+
+    @property
+    def packet_loss(self) -> float:
+        """
+        Alias for loss percentage.
+        """
+        return self.loss
+
     def __str__(self):
         return (f"Packets: sent={self.sent}, received={self.received}, loss={self.loss:.1f}%\n"
             f"RTT min/avg/max/median/jitter: \n"
@@ -192,6 +212,9 @@ def ping(
     interval: float = 0.1,
     size: int = 56,
     dscp: int = None,
+    ttl: int = None,
+    packet_callback=None,
+    raise_on_timeout: bool = False,
 ) -> PingResult:
     """
     Send ICMP echo requests (ping) to a host.
@@ -203,6 +226,9 @@ def ping(
         interval (float): Interval between packets (seconds). Default is 0.1.
         size (int): Payload size in bytes (minimum 8). Default is 8.
         dscp (int): Optional DSCP value (0-63) for packet prioritization.
+        ttl (int): Optional TTL value for packet routing (1-255).
+        packet_callback (Callable): Optional callback function for each packet.
+        raise_on_timeout (bool): If True, raises PingTimeout if no response is received.
 
     Returns:
         PingResult: Dataclass with statistics for the operation.
@@ -222,7 +248,7 @@ def ping(
     packet_id = os.getpid() & 0xFFFF
     rtt_list: List[float] = []
     received = 0
-    ttl = None
+    received_ttl = None
 
     if family == socket.AF_INET:
         proto = socket.getprotobyname('icmp')
@@ -237,64 +263,119 @@ def ping(
         raise PyMiniPingException(f"Socket error: {e}")
 
     if dscp is not None:
-        # DSCP is 6 bits in the IP header; the 2 lowest bits are ECN.
-        # Shift DSCP left by 2 to align with ToS field.
+        if not 0 <= dscp <= 63:
+            sock.close()
+            raise ValueError("dscp must be in range 0..63")
+
         if family == socket.AF_INET:
-            tos = dscp << 2
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, dscp << 2)
         elif family == socket.AF_INET6:
-            # For IPv6, traffic class is set with IPV6_TCLASS option
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_TCLASS, dscp << 2)
+
+    if ttl is not None:
+        if not 1 <= ttl <= 255:
+            sock.close()
+            raise ValueError("ttl must be in range 1..255")
+
+        if family == socket.AF_INET:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+        elif family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, ttl)
 
     for seq in range(1, count + 1):
         packet = create_packet(family, packet_id, seq, size)
+        packet_received = False
+
         try:
             sock.sendto(packet, (addr, 0, 0, 0) if family == socket.AF_INET6 else (addr, 1))
             sock.settimeout(timeout)
+
             while True:
                 try:
-                    rec_packet, _ = sock.recvfrom(1024)
+                    rec_packet, reply_addr = sock.recvfrom(1024)
                     time_received = time.time()
+
                     if family == socket.AF_INET:
                         ip_header = rec_packet[:20]
                         icmp_header = rec_packet[20:28]
                         recv_ttl = ip_header[8]
                         _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BBHHH', icmp_header)
-                        if _type == 3:  # ICMP Destination Unreachable
+
+                        if _type == 3:
                             raise DestinationUnreachable(code, message=icmp_code_to_text(code))
+
                         is_ours = recv_id == packet_id and recv_seq == seq
                     else:
-                        # IPv6: ICMP header is first 8 bytes
                         icmp_header = rec_packet[:8]
-                        recv_ttl = None  # Getting TTL for IPv6 is non-trivial
+                        recv_ttl = None
                         _type, code, _chksum, recv_id, recv_seq = struct.unpack('!BbHHh', icmp_header)
-                        if _type == 1:  # ICMPv6 Destination Unreachable
+
+                        if _type == 1:
                             raise DestinationUnreachable(code, message=icmpv6_code_to_text(code))
+
                         is_ours = recv_id == packet_id and recv_seq == seq
-                    if is_ours:
-                        bytes_in_double = struct.calcsize('d')  # always 8
-                        if family == socket.AF_INET:
-                            time_sent = struct.unpack('d', rec_packet[28:28 + bytes_in_double])[0]
-                        else:
-                            time_sent = struct.unpack('d', rec_packet[8:8 + bytes_in_double])[0]
-                        rtt = time_received - time_sent
-                        rtt_list.append(rtt)
-                        received += 1
-                        if ttl is None:
-                            ttl = recv_ttl
-                        break
+
+                    if not is_ours:
+                        continue
+
+                    bytes_in_double = struct.calcsize('d')
+
+                    if family == socket.AF_INET:
+                        time_sent = struct.unpack('d', rec_packet[28:28 + bytes_in_double])[0]
+                    else:
+                        time_sent = struct.unpack('d', rec_packet[8:8 + bytes_in_double])[0]
+
+                    rtt = time_received - time_sent
+                    rtt_list.append(rtt)
+                    received += 1
+                    packet_received = True
+
+                    if received_ttl is None:
+                        received_ttl = recv_ttl
+
+                    if packet_callback is not None:
+                        packet_callback({
+                            "host": host,
+                            "seq": seq,
+                            "reply_from": reply_addr[0] if isinstance(reply_addr, tuple) else reply_addr,
+                            "rtt": rtt,
+                            "ttl": recv_ttl,
+                            "size": size,
+                            "received": True,
+                            "family": family,
+                        })
+
+                    break
+
                 except socket.timeout:
                     break
+
         except Exception as e:
+            sock.close()
             raise PyMiniPingException(f"Ping failed: {e}")
+
+        if not packet_received and packet_callback is not None:
+            packet_callback({
+                "host": host,
+                "seq": seq,
+                "reply_from": None,
+                "rtt": None,
+                "ttl": None,
+                "size": size,
+                "received": False,
+                "family": family,
+            })
+
         time.sleep(interval if seq < count else 0)
+
     sock.close()
 
-    if received == 0:
+    if received == 0 and raise_on_timeout:
         raise PingTimeout(f"No reply from host {host} (timeout after {timeout}s).")
 
     loss = ((count - received) / count) * 100 if count else 100
-    os_guess = guess_os(ttl) if (ttl is not None and family == socket.AF_INET) else None
+    os_guess = guess_os(received_ttl) if (received_ttl is not None and family == socket.AF_INET) else None
+
     stats = {
         "sent": count,
         "received": received,
@@ -305,8 +386,8 @@ def ping(
         "median": median(rtt_list) if rtt_list else None,
         "jitter": stdev(rtt_list) if len(rtt_list) > 1 else 0,
         "rtt_list": rtt_list,
-        "ttl": ttl,
-        "hops": calc_hops(ttl) if ttl is not None and family == socket.AF_INET else None,
+        "ttl": received_ttl,
+        "hops": calc_hops(received_ttl) if received_ttl is not None and family == socket.AF_INET else None,
         "os_guess": os_guess,
         "p95": percentile(rtt_list, 95) if rtt_list else None,
     }
@@ -320,6 +401,7 @@ def ping_stats(
     interval: float = 0.1,
     size: int = 56,
     dscp: int = None,
+    ttl: int = None,
 ) -> dict:
     """
     Convenience wrapper around ping() that returns results as a dictionary.
@@ -329,4 +411,4 @@ def ping_stats(
     Returns:
         dict: Ping statistics.
     """
-    return ping(host, count, timeout, interval, size, dscp).as_dict()
+    return ping(host, count, timeout, interval, size, dscp, ttl).as_dict()
