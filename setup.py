@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='pyminiping',
-    version='2.0.0',
+    version='2.1.0',
     keywords='ping icmp network monitoring',
     description='Lightweight Python ICMP ping library for monitoring, SRE and networking tools statistics and hop count',
     long_description=open('README.md', encoding='utf-8').read(),

@@ -18,6 +18,10 @@ class PacketError(PyMiniPingException):
     """Raised when a received packet is malformed or unexpected."""
 
 
+class TimeStampNs(PacketError):
+    """Raised when is not available on this platform."""
+
+
 class DestinationUnreachable(PyMiniPingException):
     """
     Raised when an ICMP Destination Unreachable packet is received.

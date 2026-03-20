@@ -1,4 +1,5 @@
 import os
+import json
 import socket
 import struct
 import time
@@ -11,11 +12,13 @@ from .exceptions import (
     HostUnreachable,
     RootRequired,
     PingTimeout,
-    DestinationUnreachable
+    DestinationUnreachable,
+    TimeStampNs
 )
 
 ICMP_ECHO_REQUEST = 8
 ICMP6_ECHO_REQUEST = 128
+SO_TIMESTAMPNS = getattr(socket, "SO_TIMESTAMPNS", 35)
 
 
 def icmp_code_to_text(code: int) -> str:
@@ -95,26 +98,19 @@ def resolve_host(host: str):
 
 def create_packet(family: int, packet_id: int, seq: int, size: int = 8) -> bytes:
     """Create an ICMP Echo packet with a custom payload size."""
-    if family == socket.AF_INET:
-        header = struct.pack('!BBHHH', ICMP_ECHO_REQUEST, 0, 0, packet_id, seq)
-    else:
-        header = struct.pack('!BbHHh', ICMP6_ECHO_REQUEST, 0, 0, packet_id, seq)
-
-    # First 8 bytes: timestamp, the rest: padding with zero bytes
     if size < 8:
         raise ValueError("Minimum size is 8 bytes.")
 
+    icmp_type = ICMP_ECHO_REQUEST if family == socket.AF_INET else ICMP6_ECHO_REQUEST
+    header_fmt = '!BBHHH'
+
+    header = struct.pack(header_fmt, icmp_type, 0, 0, packet_id, seq)
     payload = struct.pack('d', time.time()) + bytes(size - 8)
+
     packet = header + payload
     my_checksum = checksum(packet)
 
-    if family == socket.AF_INET:
-        header = struct.pack('!BBHHH', ICMP_ECHO_REQUEST, 0, my_checksum, packet_id, seq)
-    else:
-        # For Linux raw ICMPv6 sockets checksum is typically handled by kernel,
-        # but keeping current behavior to match the existing implementation.
-        header = struct.pack('!BbHHh', ICMP6_ECHO_REQUEST, 0, my_checksum, packet_id, seq)
-
+    header = struct.pack(header_fmt, icmp_type, 0, my_checksum, packet_id, seq)
     return header + payload
 
 
@@ -142,6 +138,32 @@ def calc_hops(received_ttl: int) -> Optional[int]:
     """Estimate hop count based on common initial TTL values."""
     initial_ttl = guess_initial_ttl(received_ttl)
     return initial_ttl - received_ttl + 1
+
+
+def _enable_kernel_receive_timestamps(sock: socket.socket) -> None:
+    """Enable Linux SO_TIMESTAMPNS receive timestamps."""
+    if SO_TIMESTAMPNS is None:
+        raise TimeStampNs("SO_TIMESTAMPNS is not available on this platform.")
+
+    sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+
+
+def _extract_kernel_timestamp_ns(ancdata) -> Optional[float]:
+    """Extract SO_TIMESTAMPNS timestamp from ancillary data."""
+    if SO_TIMESTAMPNS is None:
+        return None
+
+    for cmsg_level, cmsg_type, cmsg_data in ancdata:
+        if cmsg_level == socket.SOL_SOCKET and cmsg_type == SO_TIMESTAMPNS:
+            try:
+                if len(cmsg_data) >= 16:
+                    sec, nsec = struct.unpack("qq", cmsg_data[:16])
+                else:
+                    sec, nsec = struct.unpack("ll", cmsg_data[:8])
+                return sec + (nsec / 1_000_000_000)
+            except struct.error:
+                return None
+    return None
 
 
 @dataclass
@@ -181,6 +203,17 @@ class PingResult:
     def as_dict(self):
         return asdict(self)
 
+    def as_json(self, **kwargs) -> str:
+        """
+        Return a result as a JSON string.
+
+        kwargs are passed to json.dumps(), for example:
+            indent=2
+            ensure_ascii=False
+        """
+        return json.dumps(self.as_dict(), **kwargs)
+
+
     @property
     def success(self) -> bool:
         """
@@ -215,6 +248,7 @@ def ping(
     ttl: int = None,
     packet_callback=None,
     raise_on_timeout: bool = False,
+    use_kernel_timestamp: bool = False,
 ) -> PingResult:
     """
     Send ICMP echo requests (ping) to a host.
@@ -229,6 +263,7 @@ def ping(
         ttl (int): Optional TTL value for packet routing (1-255).
         packet_callback (Callable): Optional callback function for each packet.
         raise_on_timeout (bool): If True, raises PingTimeout if no response is received.
+        use_kernel_timestamp (bool): If True, use Linux SO_TIMESTAMPNS for receive timestamps.
 
     Returns:
         PingResult: Dataclass with statistics for the operation.
@@ -262,6 +297,15 @@ def ping(
     except Exception as e:
         raise PyMiniPingException(f"Socket error: {e}")
 
+    if use_kernel_timestamp:
+        try:
+            _enable_kernel_receive_timestamps(sock)
+        except TimeStampNs:
+            print("SO_TIMESTAMPNS is not available on this platform. Falling back to timestamps.")
+            use_kernel_timestamp = False
+        except Exception as e:
+            raise PyMiniPingException(f"Failed to enable kernel receive timestamps: {e}")
+
     if dscp is not None:
         if not 0 <= dscp <= 63:
             sock.close()
@@ -292,8 +336,14 @@ def ping(
 
             while True:
                 try:
-                    rec_packet, reply_addr = sock.recvfrom(1024)
-                    time_received = time.time()
+                    if use_kernel_timestamp:
+                        rec_packet, ancdata, _, reply_addr = sock.recvmsg(1024, 256)
+                        time_received = _extract_kernel_timestamp_ns(ancdata)
+                        if time_received is None:
+                            time_received = time.time()
+                    else:
+                        rec_packet, reply_addr = sock.recvfrom(1024)
+                        time_received = time.time()
 
                     if family == socket.AF_INET:
                         ip_header = rec_packet[:20]
@@ -402,6 +452,7 @@ def ping_stats(
     size: int = 56,
     dscp: int = None,
     ttl: int = None,
+    use_kernel_timestamp: bool = False,
 ) -> dict:
     """
     Convenience wrapper around ping() that returns results as a dictionary.
@@ -411,4 +462,4 @@ def ping_stats(
     Returns:
         dict: Ping statistics.
     """
-    return ping(host, count, timeout, interval, size, dscp, ttl).as_dict()
+    return ping(host, count, timeout, interval, size, dscp, ttl, use_kernel_timestamp).as_dict()

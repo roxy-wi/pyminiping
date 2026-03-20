@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--ttl", type=int, help="Outgoing TTL / hop limit (1-255)")
     parser.add_argument("--show-rtts", action="store_true", help="Show per-packet RTT output")
     parser.add_argument("-j", "--json", action="store_true", help="Output in JSON format")
+    parser.add_argument("--precise", action="store_true", help="Use kernel timestamping (SO_TIMESTAMPNS) for more accurate RTT")
     args = parser.parse_args()
 
     try:
@@ -53,11 +54,11 @@ def main():
             dscp=args.dscp,
             ttl=args.ttl,
             packet_callback=packet_printer if args.show_rtts and not args.json else None,
+            use_kernel_timestamp=args.precise,
         )
         print()
         if args.json:
-            import json
-            print(json.dumps(result.as_dict(), indent=2, default=str))
+            print(result.as_json(indent=2))
         else:
             if result.received == 0:
                 summary_color = RED
